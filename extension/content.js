@@ -567,127 +567,226 @@
 	}
 
 	function estimateFileType(bytes, filename) {
-		if (
-			bytes.length >= 4 &&
-			bytes[0] === 0x50 &&
-			bytes[1] === 0x4b &&
-			bytes[2] === 0x03 &&
-			bytes[3] === 0x04
-		) {
+		// 1. Magic numbers for binary files
+		if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04) {
 			try {
 				const textDecoder = new TextDecoder('utf-8');
 				const str = textDecoder.decode(bytes.slice(0, 1000));
-				if (str.includes('project.json')) {
-					return 'sb3';
-				}
+				if (str.includes('project.json')) return 'sb3';
 			} catch (e) {}
 			return 'zip';
 		}
 
+		// Quick check for common image/document signatures
+		if (bytes.length >= 4) {
+			if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'binary'; // PNG
+			if (bytes[0] === 0xff && bytes[1] === 0xd8) return 'binary'; // JPEG
+			if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) return 'binary'; // GIF
+			if (bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46) return 'binary'; // PDF
+		}
+
+		// 2. Decode as text
 		let str = '';
 		try {
-			const textDecoder = new TextDecoder('utf-8');
-			str = textDecoder.decode(bytes);
+			// Using fatal: true will throw if the content is not valid UTF-8
+			str = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 		} catch (e) {
 			return 'binary';
 		}
 
-		const cleanStr = str.trim();
-
-		if (cleanStr.includes('<svg') || cleanStr.includes('<SVG')) {
-			return 'svg';
-		}
-
-		if (
-			cleanStr.includes('<!DOCTYPE html') ||
-			cleanStr.includes('<!doctype html') ||
-			cleanStr.includes('<html') ||
-			cleanStr.includes('<HTML') ||
-			cleanStr.includes('<body') ||
-			cleanStr.includes('<BODY')
-		) {
-			return 'html';
-		}
-
-		if (
-			cleanStr.includes('{') &&
-			cleanStr.includes('}') &&
-			(/[\w-]+\s*:\s*[^;]+;/g.test(cleanStr) ||
-				cleanStr.includes('@media') ||
-				cleanStr.includes('@import')) &&
-			!cleanStr.includes('function') &&
-			!cleanStr.includes('const ') &&
-			!cleanStr.includes('let ')
-		) {
-			return 'css';
-		}
-
-		const jsKeywords =
-			/\b(const|let|var|function|import|export|class|console|return|typeof|instanceof|window|document)\b|=>/g;
-		if (jsKeywords.test(cleanStr)) {
-			return 'js';
-		}
-
-		const mdKeywords = /^(#+\s|\-\s|\*\s|>\s|\[.*\]\(.*\)|`{3})/m;
-		if (mdKeywords.test(cleanStr)) {
-			return 'md';
-		}
-
+		// Check for high density of non-printable chars (excluding whitespace)
 		let nonPrintable = 0;
-		const len = Math.min(bytes.length, 100);
+		const len = Math.min(bytes.length, 256);
 		for (let i = 0; i < len; i++) {
-			if (bytes[i] < 9 || (bytes[i] > 13 && bytes[i] < 32)) {
-				nonPrintable++;
+			if (bytes[i] < 9 || (bytes[i] > 13 && bytes[i] < 32)) nonPrintable++;
+		}
+		if (nonPrintable > Math.max(5, len * 0.05)) return 'binary';
+
+		const cleanStr = str.trim();
+		if (!cleanStr) return 'text';
+
+		// Parsers
+		function canParseAsXML(text) {
+			try {
+				if (!text.includes('<') || !text.includes('>')) return false;
+				const parser = new DOMParser();
+				const doc = parser.parseFromString(text, 'text/xml');
+				return !doc.querySelector('parsererror');
+			} catch (e) {
+				return false;
 			}
 		}
-		if (nonPrintable > 5) {
-			return 'binary';
+
+		function canParseAsHTML(text) {
+			try {
+				if (!text.includes('<') || !text.includes('>')) return false;
+				const parser = new DOMParser();
+				const doc = parser.parseFromString(text, 'text/html');
+				const hasTags = Array.from(doc.body.childNodes).some(n => n.nodeType === 1);
+				const hasHead = doc.head.childNodes.length > 0;
+				return hasTags || hasHead || /<!DOCTYPE/i.test(text);
+			} catch (e) {
+				return false;
+			}
 		}
+
+		function canParseAsCSS(text) {
+			try {
+				if (!text.includes('{') || !text.includes(':')) return false;
+				if (typeof CSSStyleSheet !== 'undefined' && CSSStyleSheet.prototype.replaceSync) {
+					const sheet = new CSSStyleSheet();
+					const safeText = text.replace(/@import\s+[^;]+;?/g, '');
+					sheet.replaceSync(safeText);
+					return sheet.cssRules.length > 0;
+				}
+				return true;
+			} catch (e) {
+				return false;
+			}
+		}
+
+		function canParseAsJS(text) {
+			try {
+				const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+				let testStr = text.replace(/^\s*(import|export)\b[^;]*;?/gm, '');
+				new AsyncFunction(testStr);
+				return true;
+			} catch (e) {
+				return false;
+			}
+		}
+
+		function canParseAsMD(text) {
+			try {
+				const html = parseMarkdown(text);
+				return /<(h[1-6]|ul|ol|pre|blockquote|strong|em|del|code|a\b)/.test(html);
+			} catch (e) {
+				return false;
+			}
+		}
+
+		// 3. Strict Signatures & Parsing (HTML / SVG / XML)
+		const isXML = canParseAsXML(cleanStr);
+		const isHTML = canParseAsHTML(cleanStr);
+
+		if (isXML && !isHTML) return 'xml';
+		if (isHTML && !isXML) {
+			if (/<svg\b/i.test(cleanStr)) return 'svg';
+			return 'html';
+		}
+		if (isXML && isHTML) {
+			if (/<svg\b/i.test(cleanStr)) return 'svg';
+			if (/<html|<body|<head|<!DOCTYPE html/i.test(cleanStr)) return 'html';
+			if (/<\/?(div|span|p|a|ul|li|b|i|strong|em|table|tr|td|br|hr)\b/i.test(cleanStr)) return 'html';
+			return 'xml';
+		}
+
+		// 4. JSON
+		if (/^[\{\[]/.test(cleanStr)) {
+			let isJson = false;
+			try {
+				JSON.parse(cleanStr);
+				isJson = true;
+			} catch (e) {
+				if (/^\s*(?:\{\s*"|\[\s*(?:\{|\[|")|\[\s*\]|\{\s*\})/.test(cleanStr)) {
+					if (!/\b(const|let|function|=>|console\.log)\b/.test(cleanStr)) {
+						isJson = true;
+					}
+				}
+			}
+			if (isJson) return 'json';
+		}
+
+		// 5. Code Parsing and Scoring
+		const parsesAsJS = canParseAsJS(cleanStr);
+		const parsesAsCSS = canParseAsCSS(cleanStr);
+		const parsesAsMD = canParseAsMD(cleanStr);
+
+		const jsScore = 
+			(parsesAsJS ? 2 : -10) +
+			(cleanStr.match(/^\s*(import\s|export\s|const\s|let\s|var\s|function\s*[\w(]|class\s)/m) ? 3 : 0) +
+			(cleanStr.match(/=>/g) ? 1 : 0) +
+			(cleanStr.match(/\b(console\.|window\.|document\.|setTimeout|Promise|async\s+function|await\s)/g) ? 2 : 0) +
+			(cleanStr.match(/['"]use strict['"]/g) ? 2 : 0);
+
+		const cssScore = 
+			(parsesAsCSS ? 3 : -10) +
+			(cleanStr.match(/^\s*(@import|@media|@font-face|@keyframes|:root)/m) ? 3 : 0) +
+			(cleanStr.match(/(?:^|\})\s*[.#a-zA-Z0-9_-][^{]+\s*\{[\s\S]+?:/m) ? 2 : 0) +
+			(cleanStr.match(/!important/g) ? 2 : 0);
+
+		const mdScore = 
+			(parsesAsMD ? 2 : 0) +
+			(cleanStr.match(/^#+\s+/m) ? 2 : 0) +
+			(cleanStr.match(/^[-*+]\s+/m) ? 1 : 0) +
+			(cleanStr.match(/^>\s+/m) ? 1 : 0) +
+			(cleanStr.match(/`{3,}/g) ? 2 : 0) +
+			(cleanStr.match(/\[([^\]]+)\]\(([^)]+)\)/) ? 1 : 0) +
+			(cleanStr.match(/^---\s*$/m) ? 2 : 0);
+
+		// Evaluate scores
+		const maxScore = Math.max(jsScore, cssScore, mdScore);
+		if (maxScore >= 2) {
+			if (jsScore === maxScore) return 'js';
+			if (cssScore === maxScore) return 'css';
+			if (mdScore === maxScore) return 'md';
+		}
+
+		// 8. Weak fallback heuristics
+		if (isHTML) return 'html';
+		if (parsesAsJS && cleanStr.includes('function(')) return 'js';
+		if (parsesAsCSS && cleanStr.includes('{') && cleanStr.includes('}')) return 'css';
 
 		return 'text';
 	}
 
 	function highlightCode(code, language) {
 		let html = escHtml(code);
+		const placeholders = [];
+		const push = (replacement) => {
+			placeholders.push(replacement);
+			return `\x01NYA${placeholders.length - 1}NYA\x02`;
+		};
+
 		if (language === 'js') {
 			html = html
 				.replace(
-					/\b(const|let|var|function|class|extends|new|return|import|export|from|default|if|else|for|while|switch|case|try|catch|finally|throw|async|await|typeof|instanceof)\b/g,
-					'<span style="color: #ff7b72; font-weight: bold;">$1</span>',
-				)
-				.replace(
-					/\b(true|false|null|undefined|NaN)\b/g,
-					'<span style="color: #79c0ff;">$1</span>',
+					/(\/\/.*|\/\*[\s\S]*?\*\/)/g,
+					(m, p1) => push(`<span style="color: #8b949e; font-style: italic;">${p1}</span>`)
 				)
 				.replace(
 					/("[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'|`[^`\\]*(?:\\.[^`\\]*)*`)/g,
-					'<span style="color: #a5d6ff;">$1</span>',
+					(m, p1) => push(`<span style="color: #a5d6ff;">${p1}</span>`)
 				)
 				.replace(
-					/(\/\/.*|\/\*[\s\S]*?\*\/)/g,
-					'<span style="color: #8b949e; font-style: italic;">$1</span>',
+					/\b(const|let|var|function|class|extends|new|return|import|export|from|default|if|else|for|while|switch|case|try|catch|finally|throw|async|await|typeof|instanceof)\b/g,
+					(m, p1) => push(`<span style="color: #ff7b72; font-weight: bold;">${p1}</span>`)
+				)
+				.replace(
+					/\b(true|false|null|undefined|NaN)\b/g,
+					(m, p1) => push(`<span style="color: #79c0ff;">${p1}</span>`)
 				)
 				.replace(
 					/\b(\d+)\b/g,
-					'<span style="color: #d2a8ff;">$1</span>',
+					(m, p1) => push(`<span style="color: #d2a8ff;">${p1}</span>`)
 				);
 		} else if (language === 'css') {
 			html = html
 				.replace(
+					/(\/\*[\s\S]*?\*\/)/g,
+					(m, p1) => push(`<span style="color: #8b949e; font-style: italic;">${p1}</span>`)
+				)
+				.replace(
 					/([^{]+)\s*\{/g,
-					'<span style="color: #79c0ff; font-weight: bold;">$1</span> {',
+					(m, p1) => `${push(`<span style="color: #79c0ff; font-weight: bold;">${p1}</span>`)} {`
 				)
 				.replace(
 					/([\w-]+)\s*:/g,
-					'<span style="color: #7ee787;">$1</span>:',
+					(m, p1) => `${push(`<span style="color: #7ee787;">${p1}</span>`)}:`
 				)
 				.replace(
 					/:([^;}]+)/g,
-					(m, p1) => `: <span style="color: #a5d6ff;">${p1}</span>`,
-				)
-				.replace(
-					/(\/\*[\s\S]*?\*\/)/g,
-					'<span style="color: #8b949e; font-style: italic;">$1</span>',
+					(m, p1) => `: ${push(`<span style="color: #a5d6ff;">${p1}</span>`)}`
 				);
 		} else if (
 			language === 'html' ||
@@ -696,44 +795,67 @@
 		) {
 			html = html
 				.replace(
+					/(&lt;!--[\s\S]*?--&gt;)/g,
+					(m, p1) => push(`<span style="color: #8b949e; font-style: italic;">${p1}</span>`)
+				)
+				.replace(
 					/(&lt;\/?[a-zA-Z0-9:-]+)(\s|&gt;)/g,
-					'<span style="color: #7ee787;">$1</span>$2',
+					(m, p1, p2) => `${push(`<span style="color: #7ee787;">${p1}</span>`)}${p2}`
 				)
 				.replace(
 					/(\s[a-zA-Z0-9:-]+=)(["\'][^"\']*["\'])/g,
-					'$1<span style="color: #a5d6ff;">$2</span>',
-				)
-				.replace(
-					/(&lt;!--[\s\S]*?--&gt;)/g,
-					'<span style="color: #8b949e; font-style: italic;">$1</span>',
+					(m, p1, p2) => `${p1}${push(`<span style="color: #a5d6ff;">${p2}</span>`)}`
 				);
 		} else if (language === 'md') {
 			html = html
 				.replace(
+					/(`.*?`)/g,
+					(m, p1) => push(`<span style="color: #a5d6ff; background: rgba(110,118,129,0.4); padding: 2px 4px; border-radius: 4px;">${p1}</span>`)
+				)
+				.replace(
 					/^(#+\s+.*)$/gm,
-					'<span style="color: #1f6feb; font-weight: bold;">$1</span>',
+					(m, p1) => push(`<span style="color: #1f6feb; font-weight: bold;">${p1}</span>`)
 				)
 				.replace(
 					/(\*\*.*?\*\*)/g,
-					'<span style="color: #ff7b72; font-weight: bold;">$1</span>',
+					(m, p1) => push(`<span style="color: #ff7b72; font-weight: bold;">${p1}</span>`)
 				)
 				.replace(
 					/(\*.*?\*)/g,
-					'<span style="color: #ff7b72; font-style: italic;">$1</span>',
-				)
-				.replace(
-					/(`.*?`)/g,
-					'<span style="color: #a5d6ff; background: rgba(110,118,129,0.4); padding: 2px 4px; border-radius: 4px;">$1</span>',
+					(m, p1) => push(`<span style="color: #ff7b72; font-style: italic;">${p1}</span>`)
 				)
 				.replace(
 					/(\[.*?\]\(.*?\))/g,
-					'<span style="color: #58a6ff;">$1</span>',
+					(m, p1) => push(`<span style="color: #58a6ff;">${p1}</span>`)
 				);
+		} else if (language === 'json') {
+			html = html
+				.replace(
+					/("[^"\\]*(?:\\.[^"\\]*)*")(\s*:?)/g,
+					(m, p1, p2) => {
+						if (p2.includes(':')) {
+							return `${push(`<span style="color: #79c0ff; font-weight: bold;">${p1}</span>`)}${p2}`;
+						}
+						return `${push(`<span style="color: #a5d6ff;">${p1}</span>`)}${p2}`;
+					}
+				)
+				.replace(
+					/\b(true|false|null)\b/g,
+					(m, p1) => push(`<span style="color: #79c0ff;">${p1}</span>`)
+				)
+				.replace(
+					/\b(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b/g,
+					(m, p1) => push(`<span style="color: #d2a8ff;">${p1}</span>`)
+				);
+		}
+
+		while (html.includes('\x01NYA')) {
+			html = html.replace(/\x01NYA(\d+)NYA\x02/g, (m, idx) => placeholders[idx]);
 		}
 		return html;
 	}
 
-	function renderCodeBlock(code, language) {
+	function renderCodeBlock(code, language, isEnlarged = false) {
 		const highlighted = highlightCode(code, language);
 		const lines = highlighted.split('\n');
 
@@ -751,8 +873,11 @@
 			)
 			.join('');
 
+		const extraStyle = isEnlarged ? ' max-height: none; height: 100%; border: none; border-radius: 0;' : '';
+		const borderClass = isEnlarged ? '' : ' border border-border';
+
 		return (
-			'<div class="nyatten-code-container font-mono text-sm border border-border rounded-xl bg-muted/20">' +
+			'<div class="nyatten-code-container font-mono text-sm rounded-xl bg-muted/20' + borderClass + '" style="' + extraStyle + '">' +
 			'<table class="nyatten-code-table">' +
 			'<tbody>' +
 			rowsHtml +
@@ -762,7 +887,7 @@
 		);
 	}
 
-	function parseMarkdown(md) {
+	function parseMarkdown(md, isEnlarged = false) {
 		let html = escHtml(md);
 
 		html = html.replace(
@@ -812,15 +937,15 @@
 		);
 		html = html.replace(/\[(.*?)\]\((.*?)\)/g, (match, text, url) => {
 			const trimmedUrl = url.trim();
-			const lowercaseUrl = trimmedUrl.toLowerCase();
+			const cleanForCheck = trimmedUrl.toLowerCase().replace(/[\s\x00-\x1F]/g, '');
 			const isDangerous =
-				lowercaseUrl.startsWith('javascript:') ||
-				lowercaseUrl.startsWith('data:') ||
-				lowercaseUrl.startsWith('vbscript:');
+				cleanForCheck.startsWith('javascript:') ||
+				cleanForCheck.startsWith('data:') ||
+				cleanForCheck.startsWith('vbscript:');
 			if (isDangerous) {
 				return `<a href="#" target="_blank" class="text-link hover:underline">${text}</a>`;
 			}
-			const safeUrl = trimmedUrl.replace(/"/g, '&quot;');
+			const safeUrl = trimmedUrl.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 			return `<a href="${safeUrl}" target="_blank" class="text-link hover:underline">${text}</a>`;
 		});
 		html = html.replace(
@@ -860,8 +985,9 @@
 			})
 			.join('');
 
+		const heightClass = isEnlarged ? 'h-full p-6 sm:p-10' : 'max-h-96 p-4 border border-border rounded-xl';
 		return (
-			'<div class="nyatten-markdown-preview prose dark:prose-invert max-h-96 overflow-y-auto p-4 border border-border rounded-xl bg-card text-foreground text-sm">' +
+			'<div class="nyatten-markdown-preview prose dark:prose-invert ' + heightClass + ' overflow-y-auto bg-card text-foreground text-sm">' +
 			html +
 			'</div>'
 		);
@@ -882,11 +1008,16 @@
 
 		const backdrop = document.createElement('div');
 		backdrop.className =
-			'nyatten-modal-backdrop fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in';
+			'nyatten-modal-backdrop fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in';
+		backdrop.style.zIndex = '9999';
 
 		const modal = document.createElement('div');
 		modal.className =
-			'bg-background text-foreground rounded-2xl border border-border w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden shadow-2xl animate-scale-up';
+			'bg-background text-foreground rounded-2xl border border-border flex flex-col overflow-hidden shadow-2xl animate-scale-up';
+		modal.style.width = '90vw';
+		modal.style.maxWidth = '90vw';
+		modal.style.height = '90vh';
+		modal.style.maxHeight = '90vh';
 		modal.style.transformOrigin = 'center';
 
 		let bodyHtml = '';
@@ -961,13 +1092,13 @@
 				'</div>';
 		} else if (format === 'md') {
 			bodyHtml =
-				'<div class="w-full h-full overflow-y-auto p-8 prose dark:prose-invert text-foreground text-sm bg-card">' +
-				parseMarkdown(loadedContent || '') +
+				'<div class="w-full h-full overflow-hidden bg-card">' +
+				parseMarkdown(loadedContent || '', true) +
 				'</div>';
-		} else if (format === 'js' || format === 'css') {
+		} else if (format === 'js' || format === 'css' || format === 'json' || format === 'xml') {
 			bodyHtml =
-				'<div class="w-full h-full overflow-y-auto p-4 bg-muted/10">' +
-				renderCodeBlock(loadedContent || '', format) +
+				'<div class="w-full h-full overflow-hidden bg-muted/10">' +
+				renderCodeBlock(loadedContent || '', format, true) +
 				'</div>';
 		}
 
@@ -1364,10 +1495,12 @@
 					format = 'js';
 				else if (ext === 'css') format = 'css';
 				else if (ext === 'sb3') format = 'sb3';
+				else if (ext === 'json') format = 'json';
+				else if (ext === 'xml') format = 'xml';
 			}
 
 			const config = ctx.getConfig();
-			const customFormats = ['svg', 'md', 'html', 'js', 'css', 'sb3'];
+			const customFormats = ['svg', 'md', 'html', 'js', 'css', 'sb3', 'json', 'xml'];
 
 			let buffer = null;
 			let bytes = null;
@@ -1749,6 +1882,8 @@
 			js: true,
 			css: true,
 			sb3: true,
+			json: true,
+			xml: true,
 		},
 		init(ctx) {
 			ctx.log('ファイルプレビュー+ モジュール初期化');
@@ -3111,6 +3246,18 @@
 				description:
 					'Scratch 3.0プロジェクトファイルのプレビューを有効にします',
 			},
+			{
+				key: 'json',
+				label: 'JSON',
+				type: 'toggle',
+				description: 'JSONファイルのプレビューを有効にします',
+			},
+			{
+				key: 'xml',
+				label: 'XML',
+				type: 'toggle',
+				description: 'XMLファイルのプレビューを有効にします',
+			},
 		],
 	});
 
@@ -3551,7 +3698,7 @@
 			.replace(/>/g, '&gt;');
 	}
 	function escAttr(s) {
-		return escHtml(s).replace(/"/g, '&quot;');
+		return escHtml(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 	}
 
 	const FIELD_INPUT_CLASS =
