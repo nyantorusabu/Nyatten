@@ -671,19 +671,42 @@
 		}
 
 		function canParseAsJS(text) {
-			try {
-				const AsyncFunction = Object.getPrototypeOf(
-					async function () {},
-				).constructor;
-				let testStr = text.replace(
-					/^\s*(import|export)\b[^;]*;?/gm,
-					'',
+			// JS固有キーワードによる判定（英単語境界やアロー演算子などの特徴をチェック）
+			const hasKeyword =
+				/\b(const|let|var)\s+[a-zA-Z_$]/m.test(text) ||
+				/\b(function\s*[a-zA-Z_$]*\s*\(|class\s+[a-zA-Z_$])/m.test(
+					text,
+				) ||
+				/\b(import\s+[\s\S]+?\s+from\b|export\s+(const|let|var|function|class|default)\b)/m.test(
+					text,
 				);
-				new AsyncFunction(testStr);
-				return true;
-			} catch (e) {
-				return false;
-			}
+
+			const hasJsFeatures =
+				/\b(console\.(log|error|warn|info|debug)|window\.|document\.|setTimeout|Promise|async\s+function|await\s)/.test(
+					text,
+				) ||
+				/=>/.test(text) ||
+				/['"]use strict['"]/.test(text);
+
+			const hasCommonLibraries =
+				/\b(jQuery|\$\(|module\.exports|exports\.|process\.env)\b/.test(
+					text,
+				);
+
+			return hasKeyword || hasJsFeatures || hasCommonLibraries;
+		}
+
+		function canParseAsPython(text) {
+			// Pythonの固有特徴を検知
+			const hasKeyword =
+				/^\s*(def\s+[a-zA-Z_$]|class\s+[a-zA-Z_$]|import\s+[a-zA-Z_$]|from\s+[a-zA-Z_$]\s+import)/m.test(
+					text,
+				);
+			const hasPyFeatures =
+				/\b(print\(|self\.|__init__|__name__ == ['"]__main__['"])/.test(
+					text,
+				);
+			return hasKeyword || hasPyFeatures;
 		}
 
 		function canParseAsMD(text) {
@@ -701,25 +724,24 @@
 		const isXML = canParseAsXML(cleanStr);
 		const isHTML = canParseAsHTML(cleanStr);
 
-		if (isXML && !isHTML) return 'xml';
-		if (isHTML && !isXML) {
+		// 優先度 1: HTML の判定
+		if (isHTML || (isXML && /<svg\b/i.test(cleanStr))) {
 			if (/<svg\b/i.test(cleanStr)) return 'svg';
 			return 'html';
 		}
-		if (isXML && isHTML) {
-			if (/<svg\b/i.test(cleanStr)) return 'svg';
-			if (/<html|<body|<head|<!DOCTYPE html/i.test(cleanStr))
-				return 'html';
-			if (
-				/<\/?(div|span|p|a|ul|li|b|i|strong|em|table|tr|td|br|hr)\b/i.test(
-					cleanStr,
-				)
-			)
-				return 'html';
-			return 'xml';
+
+		// 優先度 2: JS の判定
+		const parsesAsJS = canParseAsJS(cleanStr);
+		if (parsesAsJS) {
+			return 'js';
 		}
 
-		// 4. JSON
+		// Python の判定 (その他よりも優先)
+		if (canParseAsPython(cleanStr)) {
+			return 'py';
+		}
+
+		// 優先度 3: その他 (JSON, XML, CSS, MD, Text)
 		if (/^[\{\[]/.test(cleanStr)) {
 			let isJson = false;
 			try {
@@ -731,37 +753,16 @@
 						cleanStr,
 					)
 				) {
-					if (
-						!/\b(const|let|function|=>|console\.log)\b/.test(
-							cleanStr,
-						)
-					) {
-						isJson = true;
-					}
+					isJson = true;
 				}
 			}
 			if (isJson) return 'json';
 		}
 
-		// 5. Code Parsing and Scoring
-		const parsesAsJS = canParseAsJS(cleanStr);
+		if (isXML) return 'xml';
+
 		const parsesAsCSS = canParseAsCSS(cleanStr);
 		const parsesAsMD = canParseAsMD(cleanStr);
-
-		const jsScore =
-			(parsesAsJS ? 2 : -10) +
-			(cleanStr.match(
-				/^\s*(import\s|export\s|const\s|let\s|var\s|function\s*[\w(]|class\s)/m,
-			)
-				? 3
-				: 0) +
-			(cleanStr.match(/=>/g) ? 1 : 0) +
-			(cleanStr.match(
-				/\b(console\.|window\.|document\.|setTimeout|Promise|async\s+function|await\s)/g,
-			)
-				? 2
-				: 0) +
-			(cleanStr.match(/['"]use strict['"]/g) ? 2 : 0);
 
 		const cssScore =
 			(parsesAsCSS ? 3 : -10) +
@@ -783,16 +784,12 @@
 			(cleanStr.match(/^---\s*$/m) ? 2 : 0);
 
 		// Evaluate scores
-		const maxScore = Math.max(jsScore, cssScore, mdScore);
+		const maxScore = Math.max(cssScore, mdScore);
 		if (maxScore >= 2) {
-			if (jsScore === maxScore) return 'js';
 			if (cssScore === maxScore) return 'css';
 			if (mdScore === maxScore) return 'md';
 		}
 
-		// 8. Weak fallback heuristics
-		if (isHTML) return 'html';
-		if (parsesAsJS && cleanStr.includes('function(')) return 'js';
 		if (parsesAsCSS && cleanStr.includes('{') && cleanStr.includes('}'))
 			return 'css';
 
@@ -827,6 +824,31 @@
 						),
 				)
 				.replace(/\b(true|false|null|undefined|NaN)\b/g, (m, p1) =>
+					push(`<span style="color: #79c0ff;">${p1}</span>`),
+				)
+				.replace(/\b(\d+)\b/g, (m, p1) =>
+					push(`<span style="color: #d2a8ff;">${p1}</span>`),
+				);
+		} else if (language === 'py') {
+			html = html
+				.replace(/(#.*)/g, (m, p1) =>
+					push(
+						`<span style="color: #8b949e; font-style: italic;">${p1}</span>`,
+					),
+				)
+				.replace(
+					/("[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*')/g,
+					(m, p1) =>
+						push(`<span style="color: #a5d6ff;">${p1}</span>`),
+				)
+				.replace(
+					/\b(def|class|return|import|from|as|if|elif|else|for|while|break|continue|in|is|and|or|not|try|except|finally|raise|pass|lambda|with|global|nonlocal|yield)\b/g,
+					(m, p1) =>
+						push(
+							`<span style="color: #ff7b72; font-weight: bold;">${p1}</span>`,
+						),
+				)
+				.replace(/\b(True|False|None)\b/g, (m, p1) =>
 					push(`<span style="color: #79c0ff;">${p1}</span>`),
 				)
 				.replace(/\b(\d+)\b/g, (m, p1) =>
@@ -1083,6 +1105,7 @@
 		url,
 		content,
 		totalSize,
+		defaultTab,
 	) {
 		const ext = '.' + format.toLowerCase();
 		let downloadFilename = filename;
@@ -1156,14 +1179,48 @@
 				'<iframe src="https://turbowarp.org/embed?' +
 				params.toString().replace('autoplay=true', 'autoplay') +
 				'" class="w-full h-full border-0 bg-background" scrolling="no" allowfullscreen></iframe>';
-		} else if (format === 'html') {
+		}
+		let tabs = [];
+		let tabsHtml = '';
+		let activeTab = '';
+
+		if (format === 'html') {
 			const blob = new Blob([loadedContent], { type: 'text/html' });
 			const blobUrl = URL.createObjectURL(blob);
 			localBlobUrls.push(blobUrl);
-			bodyHtml =
-				'<iframe sandbox="allow-scripts" src="' +
-				blobUrl +
-				'" class="w-full h-full border-0 bg-white"></iframe>';
+
+			tabs = ['プレビュー', 'ソースコード'];
+			activeTab =
+				defaultTab && tabs.includes(defaultTab)
+					? defaultTab
+					: 'プレビュー';
+
+			if (activeTab === 'プレビュー') {
+				bodyHtml =
+					'<iframe sandbox="allow-scripts" src="' +
+					blobUrl +
+					'" class="w-full h-full border-0 bg-white"></iframe>';
+			} else if (activeTab === 'ソースコード') {
+				bodyHtml =
+					'<div class="w-full h-full overflow-hidden bg-muted/10">' +
+					renderCodeBlock(loadedContent || '', 'html', true) +
+					'</div>';
+			}
+
+			tabsHtml = tabs
+				.map(
+					(tab) =>
+						'<button type="button" class="nyatten-modal-tab-btn px-3 py-1 text-xs font-semibold rounded-lg transition-colors ' +
+						(tab === activeTab
+							? 'bg-muted text-foreground'
+							: 'text-muted-foreground hover:text-foreground') +
+						'" data-tab="' +
+						tab +
+						'">' +
+						tab +
+						'</button>',
+				)
+				.join('');
 		} else if (format === 'svg') {
 			const blob = new Blob([loadedContent], { type: 'image/svg+xml' });
 			const blobUrl = URL.createObjectURL(blob);
@@ -1183,7 +1240,8 @@
 			format === 'js' ||
 			format === 'css' ||
 			format === 'json' ||
-			format === 'xml'
+			format === 'xml' ||
+			format === 'py'
 		) {
 			bodyHtml =
 				'<div class="w-full h-full overflow-hidden bg-muted/10">' +
@@ -1193,7 +1251,7 @@
 
 		modal.innerHTML =
 			'<div class="flex items-center justify-between border-b border-border p-4 bg-muted/10 shrink-0">' +
-			'<div class="flex items-center gap-2 min-w-0">' +
+			'<div class="flex items-center gap-4 min-w-0">' +
 			'<div class="min-w-0">' +
 			'<p class="truncate text-sm font-bold text-foreground" title="' +
 			escAttr(downloadFilename) +
@@ -1204,6 +1262,11 @@
 			format +
 			'</p>' +
 			'</div>' +
+			(tabs.length > 0
+				? '<div class="flex bg-muted/40 p-0.5 rounded-xl border border-border/50">' +
+					tabsHtml +
+					'</div>'
+				: '') +
 			'</div>' +
 			'<button type="button" class="nyatten-modal-close p-2 rounded-full hover:bg-muted text-muted-foreground hover:text-foreground transition-colors outline-none">' +
 			'<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-4">' +
@@ -1212,12 +1275,58 @@
 			'</svg>' +
 			'</button>' +
 			'</div>' +
-			'<div class="flex-1 min-h-0 w-full overflow-hidden bg-background">' +
+			'<div class="nyatten-modal-body flex-1 min-h-0 w-full overflow-hidden bg-background">' +
 			bodyHtml +
 			'</div>';
 
 		backdrop.appendChild(modal);
 		document.body.appendChild(backdrop);
+
+		// タブ切り替えのイベントリスナーを追加
+		if (format === 'html') {
+			const modalBody = modal.querySelector('.nyatten-modal-body');
+			const tabButtons = modal.querySelectorAll('.nyatten-modal-tab-btn');
+
+			const renderModalTabContent = (tab) => {
+				localBlobUrls.forEach((bUrl) => URL.revokeObjectURL(bUrl));
+				localBlobUrls = [];
+
+				if (tab === 'プレビュー') {
+					const blob = new Blob([loadedContent], {
+						type: 'text/html',
+					});
+					const blobUrl = URL.createObjectURL(blob);
+					localBlobUrls.push(blobUrl);
+					modalBody.innerHTML =
+						'<iframe sandbox="allow-scripts" src="' +
+						blobUrl +
+						'" class="w-full h-full border-0 bg-white"></iframe>';
+				} else if (tab === 'ソースコード') {
+					modalBody.innerHTML =
+						'<div class="w-full h-full overflow-hidden bg-muted/10">' +
+						renderCodeBlock(loadedContent || '', 'html', true) +
+						'</div>';
+				}
+			};
+
+			tabButtons.forEach((btn) => {
+				btn.addEventListener('click', (e) => {
+					e.preventDefault();
+					e.stopPropagation();
+					const targetTab = btn.getAttribute('data-tab');
+
+					tabButtons.forEach((b) => {
+						b.className =
+							'nyatten-modal-tab-btn px-3 py-1 text-xs font-semibold rounded-lg transition-colors ' +
+							(b.getAttribute('data-tab') === targetTab
+								? 'bg-muted text-foreground'
+								: 'text-muted-foreground hover:text-foreground');
+					});
+
+					renderModalTabContent(targetTab);
+				});
+			});
+		}
 
 		// Disable body scroll
 		const originalBodyOverflow = document.body.style.overflow;
@@ -1521,6 +1630,7 @@
 				e.preventDefault();
 				e.stopPropagation();
 				const targetTab = btn.getAttribute('data-tab');
+				activeTab = targetTab;
 
 				tabButtons.forEach((b) => {
 					b.className =
@@ -1552,7 +1662,14 @@
 			) {
 				return;
 			}
-			await openEnlargedModal(format, filename, url, content, totalSize);
+			await openEnlargedModal(
+				format,
+				filename,
+				url,
+				content,
+				totalSize,
+				activeTab,
+			);
 		});
 	}
 
@@ -1586,6 +1703,7 @@
 				else if (ext === 'sb3') format = 'sb3';
 				else if (ext === 'json') format = 'json';
 				else if (ext === 'xml') format = 'xml';
+				else if (ext === 'py') format = 'py';
 			}
 
 			const config = ctx.getConfig();
@@ -1598,6 +1716,7 @@
 				'sb3',
 				'json',
 				'xml',
+				'py',
 			];
 
 			let buffer = null;
@@ -1669,72 +1788,96 @@
 					}
 				}
 			} else {
-				// Fallback: fetch the first 4KB to estimate file type
-				const partialResponse = await fetch(url, {
-					headers: { Range: 'bytes=0-4095' },
-				});
-				if (!partialResponse.ok && partialResponse.status !== 206)
-					return;
+				// Fallback: ファイルサイズを先にHEADリクエストで確認し、
+				// 1MB以下ならフルで読み込んで精度の高い型判定を行う
+				let knownSize = null;
 
-				const partialBuffer = await partialResponse.arrayBuffer();
-				const partialBytes = new Uint8Array(partialBuffer);
-				if (partialBytes.length === 0) return;
-
-				format = estimateFileType(partialBytes, originalFilename);
-				if (!customFormats.includes(format)) return;
-				if (config[format] === false) return;
-
-				// Extract total size from headers
-				const contentRange =
-					partialResponse.headers.get('Content-Range');
-				if (contentRange) {
-					const match = contentRange.match(/\/(\d+)$/);
-					if (match) {
-						totalSize = parseInt(match[1], 10);
+				try {
+					const headResponse = await fetch(url, { method: 'HEAD' });
+					if (headResponse.ok || headResponse.status === 206) {
+						const cl = headResponse.headers.get('Content-Length');
+						if (cl) knownSize = parseInt(cl, 10);
 					}
-				}
-				if (!totalSize) {
-					const contentLength =
-						partialResponse.headers.get('Content-Length');
-					if (contentLength && partialResponse.status === 200) {
-						totalSize = parseInt(contentLength, 10);
-					}
-				}
+				} catch (_) {}
 
-				if (partialResponse.status === 200) {
-					buffer = partialBuffer;
-					bytes = partialBytes;
-					if (!totalSize) {
-						totalSize = buffer.byteLength;
-					}
-					if (totalSize > 1024 * 1024) {
-						fullContent = null;
+				if (knownSize !== null && knownSize <= 1024 * 1024) {
+					// 1MB以下: フルフェッチして精度の高い型判定
+					const fullResponse = await fetch(url);
+					if (!fullResponse.ok) return;
+
+					buffer = await fullResponse.arrayBuffer();
+					bytes = new Uint8Array(buffer);
+					totalSize = buffer.byteLength;
+
+					format = estimateFileType(bytes, originalFilename);
+					if (!customFormats.includes(format)) return;
+					if (config[format] === false) return;
+
+					if (totalSize > 128 * 1024) {
+						const truncatedBytes = bytes.slice(0, 128 * 1024);
+						const decoder = new TextDecoder('utf-8');
+						fullContent =
+							decoder.decode(truncatedBytes) +
+							'\n\n... (ファイルサイズが大きいため、プレビューは省略されました。全体を表示するにはダウンロードしてください)';
+					} else {
+						const decoder = new TextDecoder('utf-8');
+						fullContent = decoder.decode(bytes);
 					}
 				} else {
-					if (format === 'sb3') {
-						buffer = null;
-						bytes = null;
-					} else {
+					// 1MB超 or サイズ不明: 4KBだけ取得して型推定
+					const partialResponse = await fetch(url, {
+						headers: { Range: 'bytes=0-4095' },
+					});
+					if (!partialResponse.ok && partialResponse.status !== 206)
+						return;
+
+					const partialBuffer = await partialResponse.arrayBuffer();
+					const partialBytes = new Uint8Array(partialBuffer);
+					if (partialBytes.length === 0) return;
+
+					format = estimateFileType(partialBytes, originalFilename);
+					if (!customFormats.includes(format)) return;
+					if (config[format] === false) return;
+
+					// Extract total size from headers
+					const contentRange =
+						partialResponse.headers.get('Content-Range');
+					if (contentRange) {
+						const match = contentRange.match(/\/(\d+)$/);
+						if (match) {
+							totalSize = parseInt(match[1], 10);
+						}
+					}
+					if (!totalSize) {
+						const contentLength =
+							partialResponse.headers.get('Content-Length');
+						if (contentLength && partialResponse.status === 200) {
+							totalSize = parseInt(contentLength, 10);
+						}
+					}
+
+					if (partialResponse.status === 200) {
+						buffer = partialBuffer;
+						bytes = partialBytes;
+						if (!totalSize) {
+							totalSize = buffer.byteLength;
+						}
 						if (totalSize > 1024 * 1024) {
 							fullContent = null;
+						}
+					} else {
+						if (format === 'sb3') {
 							buffer = null;
+							bytes = null;
 						} else {
-							const fullResponse = await fetch(url);
-							if (!fullResponse.ok) return;
-
-							const contentLength =
-								fullResponse.headers.get('Content-Length');
-							let size = 0;
-							if (contentLength) {
-								size = parseInt(contentLength, 10);
-							}
-
-							if (size > 1024 * 1024) {
-								totalSize = size;
+							if (totalSize !== null && totalSize > 1024 * 1024) {
 								fullContent = null;
 								buffer = null;
 							} else {
-								buffer = await fullResponse.arrayBuffer();
+								const fullResponse2 = await fetch(url);
+								if (!fullResponse2.ok) return;
+
+								buffer = await fullResponse2.arrayBuffer();
 								bytes = new Uint8Array(buffer);
 								if (!totalSize) {
 									totalSize = buffer.byteLength;
@@ -1745,18 +1888,18 @@
 							}
 						}
 					}
-				}
 
-				if (format !== 'sb3' && bytes && fullContent !== null) {
-					if (totalSize > 128 * 1024) {
-						const truncatedBytes = bytes.slice(0, 128 * 1024);
-						const decoder = new TextDecoder('utf-8');
-						fullContent =
-							decoder.decode(truncatedBytes) +
-							'\n\n... (ファイルサイズが大きいため、プレビューは省略されました。全体を表示するにはダウンロードしてください)';
-					} else {
-						const decoder = new TextDecoder('utf-8');
-						fullContent = decoder.decode(bytes);
+					if (format !== 'sb3' && bytes && fullContent !== null) {
+						if (totalSize > 128 * 1024) {
+							const truncatedBytes = bytes.slice(0, 128 * 1024);
+							const decoder = new TextDecoder('utf-8');
+							fullContent =
+								decoder.decode(truncatedBytes) +
+								'\n\n... (ファイルサイズが大きいため、プレビューは省略されました。全体を表示するにはダウンロードしてください)';
+						} else {
+							const decoder = new TextDecoder('utf-8');
+							fullContent = decoder.decode(bytes);
+						}
 					}
 				}
 			}
@@ -1772,6 +1915,65 @@
 			);
 		} catch (e) {
 			console.error('[file-preview-plus] processCard error:', e);
+		}
+	}
+
+	function modifyFileInputs(ctx, root = document.body) {
+		if (!(root instanceof Element)) return;
+		const config = ctx.getConfig();
+		if (config.enabled === false || !config.allowFppUpload) return;
+
+		const inputs = [];
+		if (root.matches('input[type="file"]')) {
+			inputs.push(root);
+		}
+		inputs.push(...Array.from(root.querySelectorAll('input[type="file"]')));
+
+		const FPP_EXTENSIONS = [
+			'.svg',
+			'.md',
+			'.markdown',
+			'.html',
+			'.htm',
+			'.js',
+			'.mjs',
+			'.cjs',
+			'.css',
+			'.sb3',
+			'.json',
+			'.xml',
+			'.py',
+		];
+
+		for (const input of inputs) {
+			const currentAccept = input.getAttribute('accept') || '';
+			const currentTokens = currentAccept
+				.split(',')
+				.map((t) => t.trim().toLowerCase())
+				.filter(Boolean);
+
+			// アイコンアップロード等、画像専用のinputはスキップ
+			// accept属性がimage/*またはimage/...のみの場合はアイコン用とみなす
+			const hasImageOnly =
+				currentTokens.length > 0 &&
+				currentTokens.every(
+					(t) => t === 'image/*' || t.startsWith('image/'),
+				);
+			if (hasImageOnly) continue;
+
+			const hasAll = FPP_EXTENSIONS.every((ext) =>
+				currentTokens.includes(ext),
+			);
+			if (hasAll) continue;
+
+			const toAdd = FPP_EXTENSIONS.filter(
+				(ext) => !currentTokens.includes(ext),
+			);
+
+			if (toAdd.length > 0) {
+				const newAccept = currentTokens.concat(toAdd).join(',');
+				input.setAttribute('accept', newAccept);
+			}
 		}
 	}
 
@@ -1921,6 +2123,7 @@
 
 	function processNodes(root, ctx) {
 		if (!(root instanceof Element)) return;
+		modifyFileInputs(ctx, root);
 
 		// Fast-path: if the element is empty (no child elements) and doesn't match any target selectors,
 		// it cannot contain or be a preview card, so we skip it immediately.
@@ -1982,6 +2185,8 @@
 			sb3: true,
 			json: true,
 			xml: true,
+			py: true,
+			allowFppUpload: true,
 		},
 		init(ctx) {
 			ctx.log('ファイルプレビュー+ モジュール初期化');
@@ -2110,6 +2315,7 @@
 			const config = ctx.getConfig();
 			if (config.enabled !== false) {
 				handleDisabledNativePreviews(ctx, document.body);
+				modifyFileInputs(ctx, document.body);
 
 				const cards = document.querySelectorAll(
 					'div.flex.items-center.gap-3.rounded-lg.border.border-border.bg-muted\\/30.px-3.py-2\\.5:not([data-nyatten-preview-processed])',
@@ -2151,6 +2357,7 @@
 
 			setTimeout(() => {
 				handleDisabledNativePreviews(ctx, document.body);
+				modifyFileInputs(ctx, document.body);
 
 				const cards = document.querySelectorAll(
 					'div.flex.items-center.gap-3.rounded-lg.border.border-border.bg-muted\\/30.px-3.py-2\\.5:not([data-nyatten-preview-processed])',
@@ -3750,6 +3957,20 @@
 				label: 'XML',
 				type: 'toggle',
 				description: 'XMLファイルのプレビューを有効にします',
+			},
+			{
+				key: 'py',
+				label: 'Python',
+				type: 'toggle',
+				description:
+					'Pythonファイルのソースコードプレビューを有効にします',
+			},
+			{
+				key: 'allowFppUpload',
+				label: '拡張アップロード',
+				type: 'toggle',
+				description:
+					'一部のAtten側が対応していない形式のファイルをアップロードできるようにします',
 			},
 		],
 	});
