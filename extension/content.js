@@ -2064,9 +2064,347 @@
 		},
 	});
 
+
 	/* ---------------------------------------------------------------------------
 	 * ここから下に新しいモジュールを追記していく:
 	 * ------------------------------------------------------------------------- */
+
+	/* ---------------------------------------------------------------------------
+	 * active-indicator: アクティブインジケータ
+	 * ------------------------------------------------------------------------- */
+
+	const ACTIVE_EPOCH = 1767225600000; // 2026-01-01 00:00:00 UTC
+	const ACTIVE_START_MARKER = '\u3164';
+	const ACTIVE_PRIVATE_MARKER = '\u115F';
+	const ACTIVE_CHAR_MAP = {
+		'0': '\u1160',
+		'1': '\uffa0',
+		'2': '\u3164'
+	};
+	const ACTIVE_REV_MAP = {
+		'\u1160': '0',
+		'\uffa0': '1',
+		'\u3164': '2'
+	};
+
+	function encodeTimestamp(isPrivate) {
+		if (isPrivate) {
+			return ACTIVE_START_MARKER + ACTIVE_PRIVATE_MARKER;
+		}
+		const minutes = Math.floor((Date.now() - ACTIVE_EPOCH) / 60000);
+		const base3 = minutes.toString(3);
+		let encoded = ACTIVE_START_MARKER;
+		for (let char of base3) {
+			encoded += ACTIVE_CHAR_MAP[char];
+		}
+		return encoded;
+	}
+
+	function decodeStatus(displayName) {
+		if (!displayName || !displayName.startsWith(ACTIVE_START_MARKER)) {
+			return null;
+		}
+		if (displayName.charAt(1) === ACTIVE_PRIVATE_MARKER) {
+			return { isPrivate: true };
+		}
+		let base3Str = '';
+		let i = 1;
+		while (i < displayName.length) {
+			const char = displayName.charAt(i);
+			if (ACTIVE_REV_MAP[char] !== undefined) {
+				base3Str += ACTIVE_REV_MAP[char];
+				i++;
+			} else {
+				break;
+			}
+		}
+		if (base3Str.length === 0) {
+			return null;
+		}
+		const minutes = parseInt(base3Str, 3);
+		const timestamp = minutes * 60000 + ACTIVE_EPOCH;
+		return { isPrivate: false, timestamp };
+	}
+
+	function stripTimestamp(displayName) {
+		if (!displayName) return '';
+		return displayName.replace(/[\u3164][\u115F\u1160\uffa0\u3164]*/g, '');
+	}
+
+	Nyatten.registerModule({
+		id: 'active-indicator',
+		name: 'アクティブインジケータ',
+		description: '有効時2分30秒おきにユーザー名の先頭に不可視文字でタイムスタンプを極力圧縮して挿入し、オンライン状態の点を表示します。',
+		defaultConfig: {
+			enabled: true,
+			privateStatus: false,
+		},
+		init(ctx) {
+			ctx.log('active-indicator モジュール初期化');
+			this._ctx = ctx;
+			this._timer = null;
+			this._observer = null;
+			this._dotTimer = null;
+			this._titleObserver = null;
+
+			// スタイルの注入
+			Nyatten.util.addStyle(
+				'.nyatten-active-dot {' +
+				'  width: 8px;' +
+				'  height: 8px;' +
+				'  border-radius: 50%;' +
+				'  display: inline-block;' +
+				'  margin-left: 6px;' +
+				'  vertical-align: middle;' +
+				'  flex-shrink: 0;' +
+				'}'
+			);
+
+			// 初回実行と定期実行 (2分30秒 = 150000msおき)
+			this._updateStatus();
+			this._timer = setInterval(() => {
+				this._updateStatus();
+			}, 150000);
+
+			// ページタイトルの監視とクリーンアップ
+			const titleEl = document.querySelector('title');
+			if (titleEl) {
+				this._titleObserver = new MutationObserver(() => {
+					if (document.title && document.title.includes(ACTIVE_START_MARKER)) {
+						document.title = stripTimestamp(document.title);
+					}
+				});
+				this._titleObserver.observe(titleEl, {
+					childList: true,
+					characterData: true,
+					subtree: true,
+				});
+			}
+			if (document.title && document.title.includes(ACTIVE_START_MARKER)) {
+				document.title = stripTimestamp(document.title);
+			}
+
+			// DOMのスキャンと監視
+			this._scan(document.body);
+			
+			const debouncedScan = Nyatten.util.debounce(() => {
+				this._scan(document.body);
+			}, 100);
+
+			this._observer = new MutationObserver(() => {
+				debouncedScan();
+			});
+			this._observer.observe(document.body, {
+				childList: true,
+				subtree: true,
+				characterData: true,
+			});
+
+			// ドット色の定期更新タイマー (10秒おき)
+			this._startDotUpdater();
+		},
+
+		onRouteChange(ctx) {
+			this._ctx = ctx;
+			this._scan(document.body);
+		},
+
+		_startDotUpdater() {
+			this._dotTimer = setInterval(() => {
+				const dots = document.querySelectorAll('.nyatten-active-dot');
+				for (const dot of dots) {
+					this._updateDotColor(dot);
+				}
+			}, 10000);
+		},
+
+		_updateDotColor(dot) {
+			const now = Date.now();
+			if (dot.dataset.isPrivate === 'true') {
+				dot.style.backgroundColor = '#f97316'; // orange
+				dot.title = '非公開';
+			} else {
+				const ts = Number(dot.dataset.timestamp);
+				if (!isNaN(ts)) {
+					const diff = now - ts;
+					if (diff <= 300000) {
+						dot.style.backgroundColor = '#22c55e'; // green
+						dot.title = 'オンライン';
+					} else {
+						dot.style.backgroundColor = '#9ca3af'; // grey
+						const months = Math.floor(diff / 2592000000);
+						const days = Math.floor((diff % 2592000000) / 86400000);
+						const hours = Math.floor((diff % 86400000) / 3600000);
+						const minutes = Math.floor((diff % 3600000) / 60000);
+						const seconds = Math.floor((diff % 60000) / 1000);
+
+						const parts = [];
+						if (months > 0) parts.push(`${months}m`);
+						if (days > 0) parts.push(`${days}d`);
+						if (hours > 0) parts.push(`${hours}h`);
+						if (minutes > 0) parts.push(`${minutes}m`);
+						if (seconds > 0) parts.push(`${seconds}s`);
+
+						if (parts.length === 0) {
+							parts.push('0s');
+						}
+
+						dot.title = `オフライン(${parts.join('')})`;
+					}
+				}
+			}
+		},
+
+		_scan(root) {
+			if (!root) return;
+
+			// テキストノードのスキャン
+			const walker = document.createTreeWalker(
+				root,
+				NodeFilter.SHOW_TEXT,
+				{
+					acceptNode: (node) => {
+						if (node.nodeValue && node.nodeValue.includes(ACTIVE_START_MARKER)) {
+							return NodeFilter.FILTER_ACCEPT;
+						}
+						return NodeFilter.FILTER_REJECT;
+					},
+				},
+			);
+			const textNodes = [];
+			let current;
+			while ((current = walker.nextNode())) {
+				textNodes.push(current);
+			}
+
+			for (const textNode of textNodes) {
+				const fullText = textNode.nodeValue;
+				const status = decodeStatus(fullText);
+				if (status) {
+					const cleanText = stripTimestamp(fullText);
+					textNode.nodeValue = cleanText;
+
+					const next = textNode.nextSibling;
+					if (next && next.classList && next.classList.contains('nyatten-active-dot')) {
+						next.dataset.timestamp = status.timestamp || '';
+						next.dataset.isPrivate = status.isPrivate ? 'true' : 'false';
+						this._updateDotColor(next);
+					} else {
+						const dot = document.createElement('span');
+						dot.className = 'nyatten-active-dot';
+						dot.dataset.timestamp = status.timestamp || '';
+						dot.dataset.isPrivate = status.isPrivate ? 'true' : 'false';
+						this._updateDotColor(dot);
+						textNode.after(dot);
+					}
+				}
+			}
+
+			// 入力欄やテキストエリアのスキャン (表示名編集欄などに入り込まないように)
+			const inputs = document.querySelectorAll('input[type="text"], textarea');
+			for (const input of inputs) {
+				if (input.value && input.value.startsWith(ACTIVE_START_MARKER)) {
+					input.value = stripTimestamp(input.value);
+				}
+			}
+		},
+
+		_getAttenCsrfToken() {
+			const match = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
+			return match ? decodeURIComponent(match[1]) : null;
+		},
+
+		async _ensureAttenCsrfToken() {
+			let token = this._getAttenCsrfToken();
+			if (token) return token;
+			try {
+				await fetch('https://api.atten.win/csrf-token', {
+					credentials: 'include',
+				});
+			} catch (e) {
+				this._ctx.nyatten.warn('csrf-tokenの取得に失敗しました', e);
+			}
+			return this._getAttenCsrfToken();
+		},
+
+		async _request(method, path, body, _isRetry = false) {
+			const csrfToken = await this._ensureAttenCsrfToken();
+			const headers = {
+				Accept: 'application/json',
+				'X-Client-Id': 'atten-web',
+			};
+			if (method !== 'GET') headers['Content-Type'] = 'application/json';
+			if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
+
+			const actingUserId = window.localStorage.getItem('atten.acting_user_id');
+			if (actingUserId) {
+				headers['X-Acting-User-Id'] = actingUserId;
+			}
+
+			const res = await fetch('https://api.atten.win' + path, {
+				method,
+				credentials: 'include',
+				headers,
+				body: method === 'GET' ? undefined : JSON.stringify(body),
+			});
+			const json = await res.json().catch(() => null);
+			if (!res.ok || json?.ok === false) {
+				const code = json?.code;
+				if (method !== 'GET' && code === 'csrf_validation_failed' && !_isRetry) {
+					return this._request(method, path, body, true);
+				}
+				const err = new Error(code || `HTTP ${res.status}`);
+				err.body = json;
+				throw err;
+			}
+			return json?.data ?? json;
+		},
+
+		_apiGet(path) {
+			return this._request('GET', path);
+		},
+
+		_apiPatch(path, body) {
+			return this._request('PATCH', path, body);
+		},
+
+		async _updateStatus() {
+			const config = this._ctx.getConfig();
+			if (!config.enabled) return;
+
+			const actingUserId = window.localStorage.getItem('atten.acting_user_id');
+			if (!actingUserId) {
+				this._ctx.log('未ログインまたは操作アカウントがありません');
+				return;
+			}
+
+			try {
+				const data = await this._apiGet('/session/users');
+				if (!Array.isArray(data)) return;
+				const activeEntry = data.find((e) => e?.user?.id === actingUserId);
+				if (!activeEntry || !activeEntry.user) return;
+
+				const scratchName = activeEntry.user.scratch_name;
+				const currentDisplayName = activeEntry.user.display_name || '';
+
+				const cleanName = stripTimestamp(currentDisplayName);
+				const prefix = encodeTimestamp(config.privateStatus);
+				const newDisplayName = prefix + cleanName;
+
+				if (newDisplayName !== currentDisplayName) {
+					this._ctx.log('ユーザー名を更新します:', cleanName, '->', newDisplayName);
+					await this._apiPatch(`/users/${scratchName}`, {
+						display_name: newDisplayName,
+					});
+					this._ctx.log('ユーザー名を更新しました');
+				} else {
+					this._ctx.log('ユーザー名は最新です:', newDisplayName);
+				}
+			} catch (e) {
+				this._ctx.nyatten.warn('アクティブインジケータの更新に失敗しました:', e);
+			}
+		}
+	});
 
 	/* ---------------------------------------------------------------------------
 	 * settings-panel: Atten の設定画面に Nyatten タブを追加するモジュール
@@ -3160,6 +3498,20 @@
 		_apiPost(path, body) {
 			return this._request('POST', path, body);
 		},
+	});
+
+	Nyatten.settingsGroups.push({
+		moduleId: 'active-indicator',
+		title: 'アクティブインジケータ',
+		description: 'オンライン状態をユーザー名の先頭に埋め込み、他のユーザーの横にアクティブ状態を示す点を表示します。',
+		fields: [
+			{
+				key: 'privateStatus',
+				label: 'ステータスを非公開',
+				type: 'toggle',
+				description: '有効な場合、タイムスタンプの代わりに非公開を意味する文字を挿入します。',
+			},
+		],
 	});
 
 	Nyatten.settingsGroups.push({
