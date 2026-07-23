@@ -4665,7 +4665,7 @@
             '</div>' +
             '<p class="text-xs text-muted-foreground">最新のリリースにアップデートして、新機能や修正を適用してください。</p>' +
             '<div class="flex gap-3 mt-1">' +
-            '<a href="https://github.com/nyantorusabu/Nyatten/releases/latest" target="_blank" rel="noopener noreferrer" class="inline-flex items-center justify-center rounded-xl bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow transition-all duration-200 hover:scale-105 active:scale-95" style="background-color: var(--primary, #3b82f6); color: var(--primary-foreground, #fff); text-decoration: none;">アップデートを確認</a>' +
+            '<a href="https://github.com/NyaXLab/Nyatten/releases/latest" target="_blank" rel="noopener noreferrer" class="inline-flex items-center justify-center rounded-xl bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow transition-all duration-200 hover:scale-105 active:scale-95" style="background-color: var(--primary, #3b82f6); color: var(--primary-foreground, #fff); text-decoration: none;">アップデートを確認</a>' +
             '</div>' +
             '</div>'
         );
