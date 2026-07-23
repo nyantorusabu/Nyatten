@@ -5310,7 +5310,7 @@
                 ctx.log('現在のバージョン:', current);
 
                 const response = await fetch(
-                    'https://api.github.com/repos/nyantorusabu/Nyatten/releases/latest',
+                    'https://api.github.com/repos/NyaXLab/Nyatten/releases/latest',
                 );
                 if (!response.ok) {
                     throw new Error('HTTP error! status: ' + response.status);
