@@ -4507,7 +4507,7 @@
         }
 
         const container = document.querySelector(
-            'div.mx-auto.w-full.max-w-225',
+            'div.mx-auto.w-full.max-w-225, div.mx-auto.w-full[data-nyatten-betterui-maxw]',
         );
         if (!container) return;
 
@@ -4613,7 +4613,9 @@
         lastNyattenRenderedRoute = currentRoute;
 
         Nyatten.util
-            .waitForElement('div.mx-auto.w-full.max-w-225')
+            .waitForElement(
+                'div.mx-auto.w-full.max-w-225, div.mx-auto.w-full[data-nyatten-betterui-maxw]',
+            )
             .then((container) => {
                 if (container.querySelector('[data-nyatten-settings-panel]'))
                     return;
@@ -5467,6 +5469,313 @@
                 }
             }
         },
+    });
+
+    /* ===========================================================================
+     * BetterUI
+     *    UIの見た目を微調整するモジュール。個々の調整は「アジャストメント」として
+     *    NYATTEN_BETTER_UI_ADJUSTMENTS に追加していくだけで、設定項目(トグル)・
+     *    適用/解除・SPA遷移時の再適用まで自動的に配線される。
+     * ========================================================================= */
+    const NYATTEN_BETTER_UI_ADJUSTMENTS = [
+        {
+            key: 'maximizeContentWidth',
+            label: 'コンテンツ幅最大化',
+            description:
+                'タイムライン等の最大幅制限を解除して、画面いっぱいに広げます',
+            // 適用: 対象要素からclassを除去する
+            apply() {
+                document
+                    .querySelectorAll('main .max-w-225')
+                    .forEach((el) => {
+                        el.classList.remove('max-w-225');
+                        el.setAttribute('data-nyatten-betterui-maxw', '1');
+                    });
+            },
+            // 解除: 自分が変更した要素だけを元に戻す
+            revert() {
+                document
+                    .querySelectorAll('[data-nyatten-betterui-maxw]')
+                    .forEach((el) => {
+                        el.classList.add('max-w-225');
+                        el.removeAttribute('data-nyatten-betterui-maxw');
+                    });
+            },
+        },
+        {
+            key: 'compactSidebar',
+            label: '無駄のないサイドバー',
+            description:
+                'サイドバーの余白を詰めて、コンパクトにします',
+            apply() {
+                document
+                    .querySelectorAll('aside.p-12')
+                    .forEach((el) => {
+                        el.classList.remove('p-12');
+                        el.classList.add('p-3');
+                        el.setAttribute('data-nyatten-betterui-sidebar', '1');
+                    });
+            },
+            revert() {
+                document
+                    .querySelectorAll('aside[data-nyatten-betterui-sidebar]')
+                    .forEach((el) => {
+                        el.classList.remove('p-3');
+                        el.classList.add('p-12');
+                        el.removeAttribute('data-nyatten-betterui-sidebar');
+                    });
+            },
+        },
+        {
+            key: 'stickyTabs',
+            label: 'タブ固定',
+            description:
+                '最近/フォロー中やプロフィールのタブが下スクロールで隠れないように、常に画面上部に固定します',
+            // Atten標準では tablist の親(sticky wrapper)がスクロール方向に
+            // 応じてtransformで隠れる仕様になっているため、
+            // その打ち消し用のマーカーとstyleを注入する。
+            apply() {
+                document.documentElement.setAttribute(
+                    'data-nyatten-betterui-stickytabs-active',
+                    '1',
+                );
+                document
+                    .querySelectorAll('[role="tablist"]')
+                    .forEach((tablist) => {
+                        tablist.setAttribute(
+                            'data-nyatten-betterui-stickytabs',
+                            '1',
+                        );
+                        const wrapper = tablist.closest(
+                            '.sticky, [class*="sticky"]',
+                        );
+                        if (wrapper) {
+                            wrapper.setAttribute(
+                                'data-nyatten-betterui-stickytabs-wrapper',
+                                '1',
+                            );
+                        }
+                    });
+            },
+            revert() {
+                document.documentElement.removeAttribute(
+                    'data-nyatten-betterui-stickytabs-active',
+                );
+                document
+                    .querySelectorAll(
+                        '[data-nyatten-betterui-stickytabs]',
+                    )
+                    .forEach((el) =>
+                        el.removeAttribute(
+                            'data-nyatten-betterui-stickytabs',
+                        ),
+                    );
+                document
+                    .querySelectorAll(
+                        '[data-nyatten-betterui-stickytabs-wrapper]',
+                    )
+                    .forEach((el) =>
+                        el.removeAttribute(
+                            'data-nyatten-betterui-stickytabs-wrapper',
+                        ),
+                    );
+            },
+        },
+        {
+            key: 'stickyComposer',
+            label: 'ポスト入力エリア固定',
+            description:
+                'タイムラインのポスト入力エリアをヘッダー直下に固定し、スクロールしても位置が変わらないようにします',
+            // ポスト入力エリア(投稿フォーム)は section[data-post-card-interactive]
+            // として描画される。これにタブ直下でstickyになるマーカーを付与する。
+            apply() {
+                document
+                    .querySelectorAll(
+                        'section[data-post-card-interactive]',
+                    )
+                    .forEach((el) => {
+                        el.setAttribute(
+                            'data-nyatten-betterui-stickycomposer',
+                            '1',
+                        );
+                    });
+            },
+            revert() {
+                document
+                    .querySelectorAll(
+                        '[data-nyatten-betterui-stickycomposer]',
+                    )
+                    .forEach((el) =>
+                        el.removeAttribute(
+                            'data-nyatten-betterui-stickycomposer',
+                        ),
+                    );
+            },
+        },
+        {
+            key: 'compactTimeline',
+            label: 'コンテンツ余白除去',
+            description:
+                'コンテンツ領域の左右パディングを除去します',
+            // CSSクラスの上書きで一括除去するため、apply/revertは
+            // ルート要素へのマーカー付与のみを行う(実際の見た目の変更は
+            // _injectStyle内のCSSが担う)
+            apply() {
+                document.documentElement.setAttribute(
+                    'data-nyatten-betterui-compacttimeline',
+                    '1',
+                );
+            },
+            revert() {
+                document.documentElement.removeAttribute(
+                    'data-nyatten-betterui-compacttimeline',
+                );
+            },
+        },
+        {
+            key: 'removeTimelineRounded',
+            label: 'タイムライン要素角の丸みを除去',
+            description:
+                'タイムライン上のカードなどコンテンツ要素の丸みを除去します',
+            apply() {
+                document.documentElement.setAttribute(
+                    'data-nyatten-betterui-norounded',
+                    '1',
+                );
+            },
+            revert() {
+                document.documentElement.removeAttribute(
+                    'data-nyatten-betterui-norounded',
+                );
+            },
+        },
+    ];
+
+    Nyatten.registerModule({
+        id: 'better-ui',
+        name: 'BetterUI',
+        description: 'UI表示を細かく調整します',
+        icon: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>',
+        defaultConfig: {enabled: false, ...Object.fromEntries(
+            NYATTEN_BETTER_UI_ADJUSTMENTS.map((a) => [a.key, false])
+        )},
+        init(ctx) {
+            ctx.log('BetterUI モジュール初期化');
+            this._ctx = ctx;
+            this._injectStyle();
+            this._applyAll();
+
+            // SPAでの再描画によって対象要素が差し替わるケースに追従する。
+            // クラスが戻ってからペイントされるまでのちらつきを抑えるため、
+            // debounceせず同期的に即時適用する
+            const root = document.body || document.documentElement;
+            if (root) {
+                this._observer = new MutationObserver(() => {
+                    this._applyAll();
+                });
+                this._observer.observe(root, {
+                    childList: true,
+                    subtree: true,
+                });
+            }
+        },
+        _injectStyle() {
+            if (this._styleInjected) return;
+            this._styleInjected = true;
+            Nyatten.util.addStyle(`
+                /* stickyTabs: タブの親ラッパーが下スクロールでtransformで
+                   隠れる仕様になっているため、常時top:0に留まるよう強制する */
+                [data-nyatten-betterui-stickytabs-wrapper] {
+                    position: sticky !important;
+                    top: 0 !important;
+                    transform: none !important;
+                }
+                [data-nyatten-betterui-stickytabs-wrapper] > * {
+                    transform: none !important;
+                }
+                [data-nyatten-betterui-stickytabs] {
+                    position: relative;
+                }
+                /* stickyComposer: ポスト入力エリアをタブ直下に固定表示する。
+                   stickyTabs が無効な場合はタブ自体が固定されず流れて消えるため、
+                   タブ分のtopオフセットは不要 = 0にする(判定は _applyAll で
+                   html要素に data-nyatten-betterui-stickytabs-active を付与) */
+                [data-nyatten-betterui-stickycomposer] {
+                    position: sticky !important;
+                    top: 3.375rem !important;
+                    z-index: 15;
+                    margin-top: 0 !important;
+                }
+                html:not([data-nyatten-betterui-stickytabs-active])
+                    [data-nyatten-betterui-stickycomposer] {
+                    top: 0 !important;
+                }
+                /* compactTimeline: main要素自体および直下の要素の左右余白を除去する */
+                html[data-nyatten-betterui-compacttimeline] main,
+                html[data-nyatten-betterui-compacttimeline] main > * {
+                    padding-inline: 0 !important;
+                }
+                /* compactTimeline: 親のpadding分を打ち消すために
+                   -mx-4/-mx-8 等の負のマージンを使っている要素(タブバー等)は、
+                   親のpaddingが0になった状態ではみ出す原因になるため無効化する */
+                html[data-nyatten-betterui-compacttimeline] main [class*="-mx-"] {
+                    margin-inline: 0 !important;
+                }
+                /* compactTimeline: タイムライン上のポスト間の余白(pb-8)も除去する。
+                   仮想リストの各アイテムは ResizeObserver で実高さを監視し、
+                   高さが変わると自動的に再配置されるため、ここでの高さ変更は
+                   JS側の再計算をトリガーできる */
+                html[data-nyatten-betterui-compacttimeline] main .pb-8 {
+                    padding-bottom: 0 !important;
+                }
+                /* compactTimeline: 間隔を詰めた分、ポスト同士の境界が
+                   分かるように薄い区切り線を挟む(既存の border-border/70 相当) */
+                html[data-nyatten-betterui-compacttimeline] main .pb-8 {
+                    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+                }
+                html[data-nyatten-betterui-compacttimeline] main .pb-8:last-child {
+                    border-bottom: none;
+                }
+                /* removeTimelineRounded: タイムライン上のカード等の角丸を除去する。
+                   アバターや丸ボタンなど円形表現に使われる rounded-full は
+                   意図的に対象外とする */
+                html[data-nyatten-betterui-norounded] main [class*="rounded-"]:not([class*="rounded-full"]) {
+                    border-radius: 0 !important;
+                }
+            `);
+        },
+        onRouteChange() {
+            this._applyAll();
+        },
+        _applyAll() {
+            const config = this._ctx?.getConfig?.() ?? {};
+            for (const adjustment of NYATTEN_BETTER_UI_ADJUSTMENTS) {
+                try {
+                    if (config[adjustment.key]) {
+                        adjustment.apply();
+                    } else {
+                        adjustment.revert();
+                    }
+                } catch (e) {
+                    Nyatten.warn(
+                        `BetterUI: 調整 "${adjustment.key}" の適用でエラー`,
+                        e,
+                    );
+                }
+            }
+        },
+    });
+
+    Nyatten.settingsGroups.push({
+        moduleId: 'better-ui',
+        title: 'BetterUI',
+        description: 'UI表示を細かく調整します',
+        fields: NYATTEN_BETTER_UI_ADJUSTMENTS.map((a) => ({
+            key: a.key,
+            label: a.label,
+            type: 'toggle',
+            description: a.description,
+        })),
     });
 
     Nyatten.init();
